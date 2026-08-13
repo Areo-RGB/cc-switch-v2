@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "patches/agent-md.patch.part*"
+      - "patches/agent-md-navigation.patch"
       - ".github/workflows/build-windows.yml"
 
 permissions:
@@ -46,8 +47,16 @@ jobs:
           $chunks[0] = $chunks[0].Substring(0, $chunks[0].Length - $overlap.Length)
 
           $patch = $chunks -join ""
-          $patchPath = Join-Path $env:GITHUB_WORKSPACE "agent-md.patch"
+          $patchPath = Join-Path $env:RUNNER_TEMP "agent-md.patch"
           [System.IO.File]::WriteAllText($patchPath, $patch, [System.Text.UTF8Encoding]::new($false))
+
+          $navPatchSource = Join-Path $env:GITHUB_WORKSPACE "patches\agent-md-navigation.patch"
+          if (!(Test-Path $navPatchSource)) {
+            throw "Agent MD navigation patch is missing"
+          }
+          $navPatch = (Get-Content $navPatchSource -Raw).Replace("`r`n", "`n").Replace("`r", "`n")
+          $navPatchPath = Join-Path $env:RUNNER_TEMP "agent-md-navigation.patch"
+          [System.IO.File]::WriteAllText($navPatchPath, $navPatch, [System.Text.UTF8Encoding]::new($false))
 
           git init source
           git -C source remote add origin https://github.com/farion1231/cc-switch.git
@@ -56,6 +65,8 @@ jobs:
 
           git -C source apply --check $patchPath
           git -C source apply $patchPath
+          git -C source apply --check $navPatchPath
+          git -C source apply $navPatchPath
 
           if (!(Test-Path "source\src-tauri\src\services\agent_md.rs")) {
             throw "Agent MD backend was not applied"
@@ -77,6 +88,9 @@ jobs:
           $app = Get-Content "source\src\App.tsx" -Raw
           if (-not $app.Contains('onClick={() => setCurrentView("agents")}')) {
             throw "Agent MD manager exists but has no visible navigation button"
+          }
+          if (-not $app.Contains('AGENTS.md')) {
+            throw "Agent MD navigation is not visibly labeled AGENTS.md"
           }
 
       - name: Setup pnpm
