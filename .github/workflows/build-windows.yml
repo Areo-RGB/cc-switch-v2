@@ -1,0 +1,115 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "patches/agent-md.patch.part*"
+      - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v4
+
+      - name: Reconstruct pinned CC Switch source and apply Agent MD patch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $parts = Get-ChildItem "$env:GITHUB_WORKSPACE\patches\agent-md.patch.part*" | Sort-Object Name
+          if ($parts.Count -ne 8) {
+            throw "Expected 8 Agent MD patch parts, found $($parts.Count)"
+          }
+
+          $patch = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+          $patchPath = Join-Path $env:GITHUB_WORKSPACE "agent-md.patch"
+          [System.IO.File]::WriteAllText($patchPath, $patch, [System.Text.UTF8Encoding]::new($false))
+
+          git init source
+          git -C source remote add origin https://github.com/farion1231/cc-switch.git
+          git -C source fetch --depth=1 origin 1f38c83826a8bca3c1a7a18d9629f05a914718fd
+          git -C source checkout --detach FETCH_HEAD
+
+          git -C source apply --check $patchPath
+          git -C source apply $patchPath
+
+          if (!(Test-Path "source\src-tauri\src\services\agent_md.rs")) {
+            throw "Agent MD backend was not applied"
+          }
+          if (!(Test-Path "source\src\lib\api\agent-md.ts")) {
+            throw "Agent MD frontend API was not applied"
+          }
+
+          git -C source status --short
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Setup Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: source/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: source
+        shell: pwsh
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows executable
+        working-directory: source
+        shell: pwsh
+        run: pnpm tauri build --no-bundle
+
+      - name: Stage and verify executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sourceExe = Join-Path $env:GITHUB_WORKSPACE "source\src-tauri\target\release\cc-switch.exe"
+          if (!(Test-Path $sourceExe)) {
+            throw "Expected executable not found: $sourceExe"
+          }
+
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE "artifact"
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+          $artifactExe = Join-Path $artifactDir "CC-Switch-Agent-MD.exe"
+          Copy-Item $sourceExe $artifactExe -Force
+
+          $file = Get-Item $artifactExe
+          $hash = Get-FileHash $artifactExe -Algorithm SHA256
+          Write-Host "Built $($file.Name) ($($file.Length) bytes)"
+          Write-Host "SHA256 $($hash.Hash)"
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: CC-Switch-Agent-MD-Windows-x64
+          path: artifact/CC-Switch-Agent-MD.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
