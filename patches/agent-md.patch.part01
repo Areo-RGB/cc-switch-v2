@@ -1,0 +1,152 @@
+diff --git a/src-tauri/src/commands/agent_md.rs b/src-tauri/src/commands/agent_md.rs
+new file mode 100644
+index 0000000..8956c07
+--- /dev/null
++++ b/src-tauri/src/commands/agent_md.rs
+@@ -0,0 +1,21 @@
++use crate::services::{AgentMdService, AgentMdState};
++
++#[tauri::command]
++pub async fn get_agent_md_state() -> Result<AgentMdState, String> {
++    AgentMdService::get_state().map_err(|error| error.to_string())
++}
++
++#[tauri::command]
++pub async fn set_agent_md_global_content(content: String) -> Result<(), String> {
++    AgentMdService::set_global_content(&content).map_err(|error| error.to_string())
++}
++
++#[tauri::command]
++pub async fn set_agent_md_target_mode(target_id: String, use_global: bool) -> Result<(), String> {
++    AgentMdService::set_target_mode(&target_id, use_global).map_err(|error| error.to_string())
++}
++
++#[tauri::command]
++pub async fn set_agent_md_target_content(target_id: String, content: String) -> Result<(), String> {
++    AgentMdService::set_target_content(&target_id, &content).map_err(|error| error.to_string())
++}
+diff --git a/src-tauri/src/commands/mod.rs b/src-tauri/src/commands/mod.rs
+index 08e2709..a7683f1 100644
+--- a/src-tauri/src/commands/mod.rs
++++ b/src-tauri/src/commands/mod.rs
+@@ -1,5 +1,6 @@
+ #![allow(non_snake_case)]
+ 
++mod agent_md;
+ mod auth;
+ mod balance;
+ mod codex_oauth;
+@@ -36,6 +37,7 @@ mod usage;
+ mod webdav_sync;
+ mod workspace;
+ 
++pub use agent_md::*;
+ pub use auth::*;
+ pub use balance::*;
+ pub use codex_oauth::*;
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 1c630e8..96b9404 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -1401,6 +1401,11 @@ pub fn run() {
+             commands::delete_mcp_server,
+             commands::toggle_mcp_app,
+             commands::import_mcp_from_apps,
++            // Agent Markdown management
++            commands::get_agent_md_state,
++            commands::set_agent_md_global_content,
++            commands::set_agent_md_target_mode,
++            commands::set_agent_md_target_content,
+             // Prompt management
+             commands::get_prompts,
+             commands::upsert_prompt,
+diff --git a/src-tauri/src/services/agent_md.rs b/src-tauri/src/services/agent_md.rs
+new file mode 100644
+index 0000000..e5540bc
+--- /dev/null
++++ b/src-tauri/src/services/agent_md.rs
+@@ -0,0 +1,421 @@
++use serde::{Deserialize, Serialize};
++use std::collections::BTreeMap;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++use crate::config::{get_app_config_dir, get_home_dir, write_json_file, write_text_file};
++use crate::error::AppError;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum AgentMdTargetId {
++    Claude,
++    Codex,
++    Gemini,
++    GrokBuild,
++    OpenCode,
++    OpenClaw,
++    Hermes,
++    Copilot,
++}
++
++impl AgentMdTargetId {
++    const ALL: [Self; 8] = [
++        Self::Claude,
++        Self::Codex,
++        Self::Gemini,
++        Self::GrokBuild,
++        Self::OpenCode,
++        Self::OpenClaw,
++        Self::Hermes,
++        Self::Copilot,
++    ];
++
++    fn as_str(self) -> &'static str {
++        match self {
++            Self::Claude => "claude",
++            Self::Codex => "codex",
++            Self::Gemini => "gemini",
++            Self::GrokBuild => "grokbuild",
++            Self::OpenCode => "opencode",
++            Self::OpenClaw => "openclaw",
++            Self::Hermes => "hermes",
++            Self::Copilot => "copilot",
++        }
++    }
++
++    fn label(self) -> &'static str {
++        match self {
++            Self::Claude => "Claude Code",
++            Self::Codex => "Codex",
++            Self::Gemini => "Gemini",
++            Self::GrokBuild => "Grok Build",
++            Self::OpenCode => "OpenCode",
++            Self::OpenClaw => "OpenClaw",
++            Self::Hermes => "Hermes",
++            Self::Copilot => "GitHub Copilot",
++        }
++    }
++
++    fn file_name(self) -> &'static str {
++        match self {
++            Self::Claude => "CLAUDE.md",
++            Self::Gemini => "GEMINI.md",
++            Self::Hermes => "SOUL.md",
++            Self::Copilot => "copilot-instructions.md",
++            Self::Codex | Self::GrokBuild | Self::OpenCode | Self::OpenClaw => "AGENTS.md",
++        }
++    }
++
++    fn parse(value: &str) -> Result<Self, AppError> {
++        Self::ALL
++            .into_iter()
++            .find(|target| target.as_str() == value)
++            .ok_or_else(|| AppError::InvalidInput(format!("Unknown agent Markdown target: {value}")))
++    }
++
++    fn live_path(self) -> PathBuf {
++        match self {
++            Self::Claude => crate::config::get_claude_config_dir().join(self.file_name()),
++            Self::Codex => crate::codex_config::get_codex_config_dir().join(self.file_name()),
++            Self::Gemini => crate::gemini_config::get_gemini_dir().join(self.file_name()),
++            Self::GrokBuild => crate::grok_config::get_grok_config_dir().join(self.file_name()),
++            Self::OpenCode => crate::opencode_config::get_opencode_dir().join(self.file_name()),
++            Self::OpenClaw => crate::openclaw_config::get_openclaw_dir().join(self.file_name()),
++            Self::Hermes => crate::hermes_config::get_hermes_dir().join(self.file_name()),
