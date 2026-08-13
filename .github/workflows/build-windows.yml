@@ -71,6 +71,14 @@ jobs:
 
           git -C source status --short
 
+      - name: Verify Agent MD navigation exists
+        shell: pwsh
+        run: |
+          $app = Get-Content "source\src\App.tsx" -Raw
+          if (-not $app.Contains('onClick={() => setCurrentView("agents")}')) {
+            throw "Agent MD manager exists but has no visible navigation button"
+          }
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
