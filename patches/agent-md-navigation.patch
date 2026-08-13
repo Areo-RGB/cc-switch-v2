@@ -1,0 +1,21 @@
+diff --git a/src/App.tsx b/src/App.tsx
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1260,6 +1260,17 @@ function App() {
+                       </AnimatePresence>
+                     </div>
+ 
++                    <Button
++                      variant="ghost"
++                      size="sm"
++                      onClick={() => setCurrentView("agents")}
++                      className="ml-1 text-muted-foreground hover:bg-black/5 hover:text-foreground dark:hover:bg-white/5"
++                      title="Manage global and per-client AGENTS.md files"
++                    >
++                      <Cpu className="mr-2 h-4 w-4" />
++                      AGENTS.md
++                    </Button>
++
+                     <Button
+                       onClick={() => setIsAddOpen(true)}
+                       size="icon"
