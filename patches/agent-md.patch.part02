@@ -1,0 +1,134 @@
++            Self::OpenCode => crate::opencode_config::get_opencode_dir().join(self.file_name()),
++            Self::OpenClaw => crate::openclaw_config::get_openclaw_dir().join(self.file_name()),
++            Self::Hermes => crate::hermes_config::get_hermes_dir().join(self.file_name()),
++            Self::Copilot => get_home_dir().join(".copilot").join(self.file_name()),
++        }
++    }
++}
++
++#[derive(Debug, Clone, Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct AgentMdTargetState {
++    pub id: String,
++    pub label: String,
++    pub path: String,
++    pub file_name: String,
++    pub use_global: bool,
++    pub local_content: String,
++}
++
++#[derive(Debug, Clone, Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct AgentMdState {
++    pub global_path: String,
++    pub global_content: String,
++    pub targets: Vec<AgentMdTargetState>,
++}
++
++#[derive(Debug, Default, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++struct PersistedState {
++    #[serde(default)]
++    targets: BTreeMap<String, bool>,
++}
++
++pub struct AgentMdService;
++
++impl AgentMdService {
++    pub fn get_state() -> Result<AgentMdState, AppError> {
++        let persisted = load_persisted_state()?;
++        let global_path = global_path();
++        let global_content = read_optional_text(&global_path)?;
++        let mut targets = Vec::with_capacity(AgentMdTargetId::ALL.len());
++
++        for target in AgentMdTargetId::ALL {
++            let id = target.as_str();
++            let live_path = target.live_path();
++            let use_global = persisted.targets.get(id).copied().unwrap_or(false);
++            let draft_path = draft_path(target);
++            let local_content = if draft_path.exists() {
++                read_optional_text(&draft_path)?
++            } else if !use_global {
++                let content = read_optional_text(&live_path)?;
++                // Persist the initial local snapshot without touching the live file.
++                write_text_file(&draft_path, &content)?;
++                content
++            } else {
++                String::new()
++            };
++
++            targets.push(AgentMdTargetState {
++                id: id.to_string(),
++                label: target.label().to_string(),
++                path: live_path.to_string_lossy().to_string(),
++                file_name: target.file_name().to_string(),
++                use_global,
++                local_content,
++            });
++        }
++
++        Ok(AgentMdState {
++            global_path: global_path.to_string_lossy().to_string(),
++            global_content,
++            targets,
++        })
++    }
++
++    pub fn set_global_content(content: &str) -> Result<(), AppError> {
++        write_text_file(&global_path(), content)?;
++        let persisted = load_persisted_state()?;
++
++        for target in AgentMdTargetId::ALL {
++            if persisted
++                .targets
++                .get(target.as_str())
++                .copied()
++                .unwrap_or(false)
++            {
++                write_text_file(&target.live_path(), content)?;
++            }
++        }
++
++        Ok(())
++    }
++
++    pub fn set_target_mode(target_id: &str, use_global: bool) -> Result<(), AppError> {
++        let target = AgentMdTargetId::parse(target_id)?;
++        let mut persisted = load_persisted_state()?;
++        let current_mode = persisted
++            .targets
++            .get(target.as_str())
++            .copied()
++            .unwrap_or(false);
++
++        if current_mode == use_global {
++            // Re-sync an already-global target in case its live file was changed externally.
++            if use_global {
++                write_text_file(&target.live_path(), &read_optional_text(&global_path())?)?;
++            }
++            return Ok(());
++        }
++
++        if use_global {
++            let live_content = read_optional_text(&target.live_path())?;
++            write_text_file(&draft_path(target), &live_content)?;
++            let global_content = read_optional_text(&global_path())?;
++            write_text_file(&target.live_path(), &global_content)?;
++        } else {
++            let draft = if draft_path(target).exists() {
++                read_optional_text(&draft_path(target))?
++            } else {
++                read_optional_text(&target.live_path())?
++            };
++            write_text_file(&draft_path(target), &draft)?;
++            write_text_file(&target.live_path(), &draft)?;
++        }
++
++        persisted.targets.insert(target.as_str().to_string(), use_global);
++        save_persisted_state(&persisted)
++    }
++
++    pub fn set_target_content(target_id: &str, content: &str) -> Result<(), AppError> {
++        let target = AgentMdTargetId::parse(target_id)?;
++        let persisted = load_persisted_state()?;
++        if persisted
