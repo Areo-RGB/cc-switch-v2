@@ -31,8 +31,21 @@ jobs:
             throw "Expected 8 Agent MD patch parts, found $($parts.Count)"
           }
 
-          $patch = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
-          $patch = $patch.Replace("`r`n", "`n").Replace("`r", "`n")
+          $chunks = @($parts | ForEach-Object {
+            (Get-Content $_.FullName -Raw).Replace("`r`n", "`n").Replace("`r", "`n")
+          })
+
+          # part01 was uploaded with a three-line overlap from part02. Remove only
+          # that known overlap so the reconstructed new-file hunk is exactly 421 lines.
+          $overlap = "+            Self::OpenCode => crate::opencode_config::get_opencode_dir().join(self.file_name()),`n" +
+                     "+            Self::OpenClaw => crate::openclaw_config::get_openclaw_dir().join(self.file_name()),`n" +
+                     "+            Self::Hermes => crate::hermes_config::get_hermes_dir().join(self.file_name()),`n"
+          if (-not $chunks[0].EndsWith($overlap)) {
+            throw "Unexpected Agent MD patch part01 boundary; refusing to build"
+          }
+          $chunks[0] = $chunks[0].Substring(0, $chunks[0].Length - $overlap.Length)
+
+          $patch = $chunks -join ""
           $patchPath = Join-Path $env:GITHUB_WORKSPACE "agent-md.patch"
           [System.IO.File]::WriteAllText($patchPath, $patch, [System.Text.UTF8Encoding]::new($false))
 
@@ -49,6 +62,11 @@ jobs:
           }
           if (!(Test-Path "source\src\lib\api\agent-md.ts")) {
             throw "Agent MD frontend API was not applied"
+          }
+
+          $serviceHash = (git -C source hash-object src-tauri/src/services/agent_md.rs).Trim()
+          if ($serviceHash -ne "e5540bc98f90daa58be75d29db6ad59b1cab7d50") {
+            throw "Agent MD backend hash mismatch: $serviceHash"
           }
 
           git -C source status --short
