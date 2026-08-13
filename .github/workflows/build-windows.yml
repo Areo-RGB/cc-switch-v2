@@ -32,6 +32,7 @@ jobs:
           }
 
           $patch = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+          $patch = $patch.Replace("`r`n", "`n").Replace("`r", "`n")
           $patchPath = Join-Path $env:GITHUB_WORKSPACE "agent-md.patch"
           [System.IO.File]::WriteAllText($patchPath, $patch, [System.Text.UTF8Encoding]::new($false))
 
