@@ -1,0 +1,121 @@
++        AgentMdService::set_target_mode("codex", true).expect("enable");
++        AgentMdService::set_target_mode("codex", false).expect("disable");
++
++        assert_eq!(fs::read_to_string(&codex_path).unwrap(), "codex local");
++        let refreshed = AgentMdService::get_state().expect("refreshed");
++        let codex = refreshed.targets.iter().find(|t| t.id == "codex").unwrap();
++        assert!(!codex.use_global);
++    }
++
++    #[test]
++    #[serial]
++    fn changing_global_updates_enabled_targets_only() {
++        let temp = tempfile::tempdir().expect("tempdir");
++        let _guard = TestHomeGuard::set(temp.path());
++
++        let state = AgentMdService::get_state().expect("state");
++        let claude_path = target_path(&state, "claude");
++        let gemini_path = target_path(&state, "gemini");
++        for path in [&claude_path, &gemini_path] {
++            fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
++        }
++        fs::write(&claude_path, "claude local").unwrap();
++        fs::write(&gemini_path, "gemini local").unwrap();
++
++        AgentMdService::set_global_content("shared one").unwrap();
++        AgentMdService::set_target_mode("claude", true).unwrap();
++        AgentMdService::set_global_content("shared two").unwrap();
++
++        assert_eq!(fs::read_to_string(&claude_path).unwrap(), "shared two");
++        assert_eq!(fs::read_to_string(&gemini_path).unwrap(), "gemini local");
++    }
++
++    #[test]
++    #[serial]
++    fn local_edit_is_rejected_while_target_uses_global() {
++        let temp = tempfile::tempdir().expect("tempdir");
++        let _guard = TestHomeGuard::set(temp.path());
++
++        AgentMdService::set_global_content("shared").unwrap();
++        AgentMdService::set_target_mode("opencode", true).unwrap();
++        let error = AgentMdService::set_target_content("opencode", "local")
++            .expect_err("editing should fail");
++
++        assert!(error.to_string().to_lowercase().contains("global"));
++    }
++
++    #[test]
++    #[serial]
++    fn fresh_state_imports_existing_live_content_as_initial_local_draft() {
++        let temp = tempfile::tempdir().expect("tempdir");
++        let _guard = TestHomeGuard::set(temp.path());
++
++        let live_path = temp.path().join(".gemini").join("GEMINI.md");
++        fs::create_dir_all(live_path.parent().unwrap()).unwrap();
++        fs::write(&live_path, "existing gemini").unwrap();
++
++        let state = AgentMdService::get_state().expect("state");
++        let gemini = state.targets.iter().find(|t| t.id == "gemini").unwrap();
++
++        assert!(!gemini.use_global);
++        assert_eq!(gemini.local_content, "existing gemini");
++        assert_eq!(fs::read_to_string(&live_path).unwrap(), "existing gemini");
++    }
++}
+diff --git a/src-tauri/src/services/mod.rs b/src-tauri/src/services/mod.rs
+index 2fce3be..66ed982 100644
+--- a/src-tauri/src/services/mod.rs
++++ b/src-tauri/src/services/mod.rs
+@@ -1,3 +1,4 @@
++pub mod agent_md;
+ pub mod balance;
+ pub mod codex_oauth_models;
+ pub mod coding_plan;
+@@ -33,6 +34,7 @@ pub mod webdav;
+ pub mod webdav_auto_sync;
+ pub mod webdav_sync;
+ 
++pub use agent_md::{AgentMdService, AgentMdState, AgentMdTargetState};
+ pub use config::ConfigService;
+ pub use mcp::McpService;
+ pub use omo::OmoService;
+diff --git a/src/App.tsx b/src/App.tsx
+index 926d8b7..d846a55 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -189,6 +189,7 @@ function App() {
+   const [skillsNavigationBusy, setSkillsNavigationBusy] = useState(false);
+   const [promptManagementBusy, setPromptManagementBusy] = useState(false);
+   const [promptNavigationBusy, setPromptNavigationBusy] = useState(false);
++  const [agentsNavigationBusy, setAgentsNavigationBusy] = useState(false);
+   const [skillsCheckUpdatesState, setSkillsCheckUpdatesState] =
+     useState<SkillsCheckUpdatesState>({
+       isChecking: false,
+@@ -606,7 +607,10 @@ function App() {
+ 
+   const currentViewRef = useRef(currentView);
+   const managementBusy =
+-    mcpManagementBusy || skillsNavigationBusy || promptNavigationBusy;
++    mcpManagementBusy ||
++    skillsNavigationBusy ||
++    promptNavigationBusy ||
++    agentsNavigationBusy;
+   const managementBusyRef = useRef(false);
+   managementBusyRef.current = managementBusy;
+ 
+@@ -971,7 +975,10 @@ function App() {
+           );
+         case "agents":
+           return (
+-            <AgentsPanel onOpenChange={() => setCurrentView("providers")} />
++            <AgentsPanel
++              onOpenChange={() => setCurrentView("providers")}
++              onInteractionBlockedChange={setAgentsNavigationBusy}
++            />
+           );
+         case "universal":
+           return (
+diff --git a/src/components/agents/AgentMdEditorDialog.tsx b/src/components/agents/AgentMdEditorDialog.tsx
+new file mode 100644
+index 0000000..ab2f90c
+--- /dev/null
