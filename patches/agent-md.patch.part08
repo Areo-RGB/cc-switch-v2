@@ -1,0 +1,133 @@
++                      </div>
++
++                      <Tooltip>
++                        <TooltipTrigger asChild>
++                          <span>
++                            <Button
++                              variant="ghost"
++                              size="sm"
++                              disabled={editDisabled}
++                              onClick={() => setEditorTarget({ kind: "local", target })}
++                            >
++                              <FileText className="mr-1.5 h-4 w-4" />
++                              {t("common.edit", { defaultValue: "Edit" })}
++                            </Button>
++                          </span>
++                        </TooltipTrigger>
++                        {target.useGlobal ? (
++                          <TooltipContent>
++                            {t("agents.editGlobalInstead", {
++                              defaultValue: "Disable global mode to edit this client's local copy.",
++                            })}
++                          </TooltipContent>
++                        ) : null}
++                      </Tooltip>
++
++                      <div className="flex shrink-0 items-center gap-2 pl-1">
++                        <span className="whitespace-nowrap text-xs text-muted-foreground">
++                          {t("agents.useGlobal", { defaultValue: "Use global" })}
++                        </span>
++                        {pending ? (
++                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
++                        ) : null}
++                        <Switch
++                          aria-label={`${target.label} ${t("agents.useGlobal", { defaultValue: "Use global" })}`}
++                          checked={target.useGlobal}
++                          disabled={busyTarget !== null}
++                          onCheckedChange={(checked) => void handleToggle(target, checked)}
++                        />
++                      </div>
++                    </ListItemRow>
++                  );
++                })}
++              </div>
++            )}
++          </div>
++        </ScrollArea>
++
++        {editor ? (
++          <AgentMdEditorDialog
++            open={editorTarget !== null}
++            title={editor.title}
++            description={editor.description}
++            path={editor.path}
++            value={editor.value}
++            saving={busyTarget !== null}
++            onOpenChange={(open) => !open && setEditorTarget(null)}
++            onSave={editor.save}
++          />
++        ) : null}
+       </div>
+-    </div>
++    </TooltipProvider>
+   );
+ }
+diff --git a/src/lib/api/agent-md.ts b/src/lib/api/agent-md.ts
+new file mode 100644
+index 0000000..195c9fe
+--- /dev/null
++++ b/src/lib/api/agent-md.ts
+@@ -0,0 +1,50 @@
++import { invoke } from "@tauri-apps/api/core";
++
++export type AgentMdTargetId =
++  | "claude"
++  | "codex"
++  | "gemini"
++  | "grokbuild"
++  | "opencode"
++  | "openclaw"
++  | "hermes"
++  | "copilot";
++
++export interface AgentMdTargetState {
++  id: AgentMdTargetId;
++  label: string;
++  path: string;
++  fileName: string;
++  useGlobal: boolean;
++  localContent: string;
++}
++
++export interface AgentMdState {
++  globalPath: string;
++  globalContent: string;
++  targets: AgentMdTargetState[];
++}
++
++export const agentMdApi = {
++  async getState(): Promise<AgentMdState> {
++    return invoke<AgentMdState>("get_agent_md_state");
++  },
++
++  async setGlobalContent(content: string): Promise<void> {
++    return invoke("set_agent_md_global_content", { content });
++  },
++
++  async setTargetMode(
++    targetId: AgentMdTargetId,
++    useGlobal: boolean,
++  ): Promise<void> {
++    return invoke("set_agent_md_target_mode", { targetId, useGlobal });
++  },
++
++  async setTargetContent(
++    targetId: AgentMdTargetId,
++    content: string,
++  ): Promise<void> {
++    return invoke("set_agent_md_target_content", { targetId, content });
++  },
++};
+diff --git a/src/lib/api/index.ts b/src/lib/api/index.ts
+index 2c354bf..0d6df3e 100644
+--- a/src/lib/api/index.ts
++++ b/src/lib/api/index.ts
+@@ -6,6 +6,8 @@ export { mcpApi } from "./mcp";
+ export { profilesApi } from "./profiles";
+ export { promptsApi } from "./prompts";
+ export { skillsApi } from "./skills";
++export { agentMdApi } from "./agent-md";
++export type { AgentMdState, AgentMdTargetState, AgentMdTargetId } from "./agent-md";
+ export { usageApi } from "./usage";
+ export { subscriptionApi } from "./subscription";
+ export { vscodeApi } from "./vscode";
