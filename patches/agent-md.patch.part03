@@ -1,0 +1,142 @@
++            .targets
++            .get(target.as_str())
++            .copied()
++            .unwrap_or(false)
++        {
++            return Err(AppError::InvalidInput(format!(
++                "{} is using global Agent Markdown content; disable global mode before editing its local file",
++                target.label()
++            )));
++        }
++
++        write_text_file(&draft_path(target), content)?;
++        write_text_file(&target.live_path(), content)
++    }
++}
++
++fn agent_md_dir() -> PathBuf {
++    get_app_config_dir().join("agent-md")
++}
++
++fn global_path() -> PathBuf {
++    get_app_config_dir().join("AGENTS.md")
++}
++
++fn state_path() -> PathBuf {
++    agent_md_dir().join("state.json")
++}
++
++fn draft_path(target: AgentMdTargetId) -> PathBuf {
++    agent_md_dir()
++        .join("drafts")
++        .join(format!("{}.md", target.as_str()))
++}
++
++fn read_optional_text(path: &Path) -> Result<String, AppError> {
++    match fs::read_to_string(path) {
++        Ok(content) => Ok(content),
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
++        Err(error) => Err(AppError::io(path, error)),
++    }
++}
++
++fn load_persisted_state() -> Result<PersistedState, AppError> {
++    let path = state_path();
++    if !path.exists() {
++        return Ok(PersistedState::default());
++    }
++
++    let raw = fs::read_to_string(&path).map_err(|error| AppError::io(&path, error))?;
++    serde_json::from_str(&raw).map_err(|source| AppError::json(&path, source))
++}
++
++fn save_persisted_state(state: &PersistedState) -> Result<(), AppError> {
++    write_json_file(&state_path(), state)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::AgentMdService;
++    use serial_test::serial;
++    use std::fs;
++    use std::path::PathBuf;
++
++    struct TestHomeGuard {
++        test_home: Option<std::ffi::OsString>,
++        hermes_home: Option<std::ffi::OsString>,
++        local_appdata: Option<std::ffi::OsString>,
++    }
++
++    impl TestHomeGuard {
++        fn set(home: &std::path::Path) -> Self {
++            let guard = Self {
++                test_home: std::env::var_os("CC_SWITCH_TEST_HOME"),
++                hermes_home: std::env::var_os("HERMES_HOME"),
++                local_appdata: std::env::var_os("LOCALAPPDATA"),
++            };
++            std::env::set_var("CC_SWITCH_TEST_HOME", home);
++            std::env::remove_var("HERMES_HOME");
++            std::env::remove_var("LOCALAPPDATA");
++            guard
++        }
++    }
++
++    impl Drop for TestHomeGuard {
++        fn drop(&mut self) {
++            restore_env("CC_SWITCH_TEST_HOME", self.test_home.take());
++            restore_env("HERMES_HOME", self.hermes_home.take());
++            restore_env("LOCALAPPDATA", self.local_appdata.take());
++        }
++    }
++
++    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
++        match value {
++            Some(value) => std::env::set_var(key, value),
++            None => std::env::remove_var(key),
++        }
++    }
++
++    fn target_path(state: &super::AgentMdState, id: &str) -> PathBuf {
++        PathBuf::from(
++            state
++                .targets
++                .iter()
++                .find(|target| target.id == id)
++                .expect("target")
++                .path
++                .clone(),
++        )
++    }
++
++    #[test]
++    #[serial]
++    fn enabling_global_snapshots_live_content_and_writes_global_content() {
++        let temp = tempfile::tempdir().expect("tempdir");
++        let _guard = TestHomeGuard::set(temp.path());
++
++        let state = AgentMdService::get_state().expect("state");
++        let claude_path = target_path(&state, "claude");
++        fs::create_dir_all(claude_path.parent().expect("parent")).expect("mkdir");
++        fs::write(&claude_path, "# Claude local\n").expect("seed live");
++
++        AgentMdService::set_global_content("# Shared\n").expect("set global");
++        AgentMdService::set_target_mode("claude", true).expect("enable global");
++
++        assert_eq!(fs::read_to_string(&claude_path).unwrap(), "# Shared\n");
++        let refreshed = AgentMdService::get_state().expect("refreshed");
++        let claude = refreshed.targets.iter().find(|t| t.id == "claude").unwrap();
++        assert!(claude.use_global);
++        assert_eq!(claude.local_content, "# Claude local\n");
++    }
++
++    #[test]
++    #[serial]
++    fn disabling_global_restores_preserved_local_draft() {
++        let temp = tempfile::tempdir().expect("tempdir");
++        let _guard = TestHomeGuard::set(temp.path());
++
++        let state = AgentMdService::get_state().expect("state");
++        let codex_path = target_path(&state, "codex");
++        fs::create_dir_all(codex_path.parent().expect("parent")).expect("mkdir");
++        fs::write(&codex_path, "codex local").expect("seed live");
++        AgentMdService::set_global_content("shared").expect("set global");
