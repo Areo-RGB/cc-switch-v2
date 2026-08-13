@@ -1,0 +1,140 @@
++  const [loading, setLoading] = useState(true);
++  const [error, setError] = useState<string | null>(null);
++  const [searchQuery, setSearchQuery] = useState("");
++  const [busyTarget, setBusyTarget] = useState<AgentMdTargetId | "global" | null>(null);
++  const [editorTarget, setEditorTarget] = useState<EditorTarget | null>(null);
++
++  const blocked = loading || busyTarget !== null || editorTarget !== null;
++
++  useEffect(() => {
++    onInteractionBlockedChange?.(blocked);
++  }, [blocked, onInteractionBlockedChange]);
++
++  useEffect(
++    () => () => onInteractionBlockedChange?.(false),
++    [onInteractionBlockedChange],
++  );
++
++  const loadState = useCallback(async () => {
++    setLoading(true);
++    setError(null);
++    try {
++      setState(await agentMdApi.getState());
++    } catch (reason) {
++      const message = String(reason);
++      setError(message);
++      toast.error(
++        t("agents.loadFailed", { defaultValue: "Failed to load agent instructions" }),
++        { description: message },
++      );
++    } finally {
++      setLoading(false);
++    }
++  }, [t]);
++
++  useEffect(() => {
++    void loadState();
++  }, [loadState]);
++
++  const linkedCount = state?.targets.filter((target) => target.useGlobal).length ?? 0;
++  const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
++  const filteredTargets = useMemo(() => {
++    const targets = state?.targets ?? [];
++    if (!normalizedQuery) return targets;
++    return targets.filter((target) =>
++      [target.label, target.id, target.path, target.fileName].some((value) =>
++        value.toLocaleLowerCase().includes(normalizedQuery),
++      ),
++    );
++  }, [normalizedQuery, state?.targets]);
++
++  const mutate = async (
++    key: AgentMdTargetId | "global",
++    action: () => Promise<void>,
++    successMessage: string,
++  ) => {
++    if (busyTarget) return false;
++    setBusyTarget(key);
++    try {
++      await action();
++      await loadState();
++      toast.success(successMessage);
++      return true;
++    } catch (reason) {
++      toast.error(t("agents.saveFailed", { defaultValue: "Could not save changes" }), {
++        description: String(reason),
++      });
++      await loadState();
++      return false;
++    } finally {
++      setBusyTarget(null);
++    }
++  };
++
++  const handleToggle = async (target: AgentMdTargetState, useGlobal: boolean) => {
++    await mutate(
++      target.id,
++      () => agentMdApi.setTargetMode(target.id, useGlobal),
++      useGlobal
++        ? t("agents.globalEnabled", {
++            defaultValue: "{{name}} now uses global instructions",
++            name: target.label,
++          })
++        : t("agents.localEnabled", {
++            defaultValue: "{{name}} restored its local instructions",
++            name: target.label,
++          }),
++    );
++  };
++
++  const editor = (() => {
++    if (!editorTarget || !state) return null;
++    if (editorTarget.kind === "global") {
++      return {
++        title: t("agents.editGlobal", { defaultValue: "Edit global AGENTS.md" }),
++        description: t("agents.editGlobalDescription", {
++          defaultValue: "Saved changes are copied to every client using global mode.",
++        }),
++        path: state.globalPath,
++        value: state.globalContent,
++        save: (value: string) =>
++          mutate(
++            "global",
++            () => agentMdApi.setGlobalContent(value),
++            t("agents.globalSaved", { defaultValue: "Global instructions saved" }),
++          ),
++      };
++    }
++
++    const target = editorTarget.target;
++    return {
++      title: t("agents.editLocal", {
++        defaultValue: "Edit {{name}} instructions",
++        name: target.label,
++      }),
++      description: t("agents.editLocalDescription", {
++        defaultValue: "This local version is preserved when you temporarily switch to global mode.",
++      }),
++      path: target.path,
++      value: target.localContent,
++      save: (value: string) =>
++        mutate(
++          target.id,
++          () => agentMdApi.setTargetContent(target.id, value),
++          t("agents.localSaved", {
++            defaultValue: "{{name}} instructions saved",
++            name: target.label,
++          }),
++        ),
++    };
++  })();
++
+   return (
+-    <div className="px-6 flex flex-col flex-1 min-h-0">
+-      <div className="flex-1 glass-card rounded-xl p-8 flex flex-col items-center justify-center text-center space-y-4">
+-        <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-4 animate-pulse-slow">
+-          <Bot className="w-10 h-10 text-muted-foreground" />
++    <TooltipProvider>
++      <div className="flex min-h-0 flex-1 flex-col px-6">
++        <div className="mb-4 flex flex-shrink-0 items-center gap-4 rounded-xl border border-white/10 px-6 py-4 glass">
++          <div className="flex min-w-0 flex-1 items-center gap-3">
